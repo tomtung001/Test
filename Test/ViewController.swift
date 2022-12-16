@@ -9,9 +9,21 @@ import UIKit
 
 class ViewController: UIViewController {
 
+    let label: UILabel = {
+        let label = UILabel()
+        label.text = "測試"
+        return label
+    }()
+    
     override func viewDidLoad() {
         super.viewDidLoad()
-        // Do any additional setup after loading the view.
+        
+        view.addSubview(label)
+        
+        label.translatesAutoresizingMaskIntoConstraints = false
+        
+        label.centerYAnchor.constraint(equalTo: view.centerYAnchor).isActive = true
+        label.centerXAnchor.constraint(equalTo: view.centerXAnchor).isActive = true
     }
 
 
