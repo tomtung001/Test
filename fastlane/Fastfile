@@ -1,0 +1,405 @@
+default_platform(:ios)
+
+platform :ios do
+  
+  desc "Show fastlane script version"
+  lane :script_version do
+    puts "script version: " + "1.1.0"
+  end 
+
+  lane :deleteCert do
+    connectAppStoreWithAPIKey
+    match_nuke(type: "appstore", team_id: "#{ENV['TEAM_ID']}",
+    skip_confirmation: true)
+  end
+  
+  # 打包以後上傳，更新 metadata 並送審
+  lane :all do
+    arch
+    submit_review
+    upload_dsym_sentry
+    upload_dsym_appcenter
+  end
+
+  # 打包以後上傳 TestFlight
+  lane :first_upload do
+    arch
+    upload_testflight
+    upload_dsym_sentry
+    upload_dsym_appcenter
+  end
+
+  # 第一次送審，打包以後上傳送審
+  lane :first_submit do
+    arch
+    submit_pure
+    upload_dsym_sentry
+    upload_dsym_appcenter
+  end
+
+  private_lane :filePath do
+    "build/#{getFileName}.ipa"
+  end
+
+  private_lane :getFileName do
+    ensure_env_vars(env_vars: ['BUILD_CONFIGURATION'])
+
+    versionNumber = get_version_number(target: ENV["SCHEME"])
+    "#{ENV["SCHEME"]}_#{versionNumber}"
+  end
+
+  lane :connectAppStoreWithAPIKey do
+    app_store_connect_api_key(
+      key_id: ENV['API_KEY_ID'],
+      issuer_id: ENV['API_KEY_ISSUER_ID'],
+      key_filepath: ENV['API_KEY_PATH'],
+      in_house: false
+    )
+  end
+
+  lane :createCert do
+    connectAppStoreWithAPIKey
+
+    keychain_password = ENV['MATCH_KEYCHAIN_PASSWORD']
+    puts "keychain_password = #{keychain_password}"
+
+    sh("security unlock-keychain -p #{keychain_password} ~/Library/Keychains/login.keychain")
+
+    cert(
+      development: false,
+      force: false,
+      generate_apple_certs: true,
+      team_id: ENV['TEAM_ID'],
+      output_path: "fastlane/provision"
+    )
+
+    puts "CERT_CERTIFICATE_ID = #{lane_context[SharedValues::CERT_CERTIFICATE_ID]}"
+    puts "CERT_FILE_PATH = #{lane_context[SharedValues::CERT_FILE_PATH]}"
+
+    sigh(
+      force: false,
+      app_identifier:ENV['BUNDLE_ID'],
+      output_path:"fastlane/provision",
+      cert_id: lane_context[SharedValues::CERT_CERTIFICATE_ID]
+    )
+  end
+
+  desc "Build and archive APP"
+  lane :arch do 
+ 
+    ensure_env_vars(env_vars: ['ARCHIVE_TYPE'])
+    ipaFileName = "#{getFileName}.ipa"
+    profileName = "#{ENV['BUNDLE_ID']} AppStore"
+
+    update_code_signing_settings(
+      path: "#{ENV['SCHEME']}.xcodeproj",
+      profile_name: "#{ENV['BUNDLE_ID']} AppStore",
+      targets: ENV["SCHEME"],
+      bundle_identifier: ENV["BUNDLE_ID"],
+      team_id:ENV["TEAM_ID"],
+      code_sign_identity: ENV["CERTIFICATE"]
+    )
+
+    build_app(
+      workspace: "#{ENV['SCHEME']}.xcworkspace",
+      scheme: ENV["SCHEME"],
+      export_method: ENV['ARCHIVE_TYPE'],
+      clean: true,
+      output_directory: 'build',
+      output_name: ipaFileName,
+      xcargs: 'DEBUG_INFORMATION_FORMAT=dwarf-with-dsym',
+      skip_profile_detection: true,
+      # export_options: {
+      #   provisioningProfiles: { 
+      #     ENV['BUNDLE_ID'] => "#{profileName}"
+      #   }
+      # }
+    )
+  end
+
+  desc "upload to testflight"
+  lane :upload_testflight do 
+
+    connectAppStoreWithAPIKey
+
+    puts "upload ipa from #{filePath}"
+    pilot(
+      ipa: filePath,
+      skip_waiting_for_build_processing: false
+    )
+  end
+
+  desc "上傳 dsym 到 sentry"
+  lane :upload_dsym_sentry do 
+
+#    dsymFilePath = "build/#{getFileName}.app.dSYM.zip"
+#    puts "upload dsym from #{dsymFilePath}"
+#
+#    sentry_upload_dif( 
+#      url: "http://sentry.apple.net:19000/",
+#      auth_token: '692edf9c31c9446883f52cebcc1837df5878ac643cb74ae5b8762b7a8b9f065a',
+#      org_slug: 'sentry',
+#      project_slug: 'package',
+#      path: dsymFilePath
+#    )
+  end
+
+  desc "上傳ipa，更新送審資料，送審一氣呵成"
+  lane :submit_review do
+    connectAppStoreWithAPIKey
+
+    deliver(
+      app_identifier: ENV['BUNDLE_ID'],
+      submit_for_review: true, #用來送審
+      automatic_release: true, #審過自動開放
+      force: true, 
+      skip_metadata: false, #要更新文案
+      skip_screenshots: true, #不上傳截圖
+      ipa: filePath,
+      run_precheck_before_submit: false, #不預先檢查
+      reject_if_possible: true, #如果有已經送審中的 ipa，就取消重送
+      submission_information: { add_id_info_uses_idfa: false,
+      export_compliance_uses_encryption: false,}, #隱私權設定
+      languages: ['en-US'],
+      release_notes: {
+          'en-US' => ENV["NOTE"]
+        }
+    )
+  end
+
+  desc "上傳ipa，不更新送審資料，送審一氣呵成"
+  lane :submit_pure do
+    connectAppStoreWithAPIKey
+
+    deliver(
+      app_identifier: ENV['BUNDLE_ID'],
+      submit_for_review: true, #用來送審
+      automatic_release: true, #審過自動開放
+      force: true, 
+      skip_metadata: false, #要更新文案
+      skip_screenshots: true, #不上傳截圖
+      ipa: filePath,
+      run_precheck_before_submit: false, #不預先檢查
+      reject_if_possible: true, #如果有已經送審中的 ipa，就取消重送
+      submission_information: { add_id_info_uses_idfa: false,
+      export_compliance_uses_encryption: false,}, #隱私權設定
+      languages: ['en-US']
+    )
+  end
+
+  desc "上傳送審資料(有聯絡人)兼送審"
+  lane :Update_Submit do
+    connectAppStoreWithAPIKey
+    deliver(
+      app_identifier: ENV['BUNDLE_ID'],
+      automatic_release: true, 
+      force: true, # Skip HTMl report verification
+      skip_metadata: false, #要更新文案
+      skip_screenshots: false, #要上傳截圖
+      overwrite_screenshots: true, #要更新截圖
+      skip_binary_upload: true, #不上傳 ipa
+      reject_if_possible: false, #如果有已經送審中的 ipa，就取消重送 
+      submit_for_review: true, #送審
+      run_precheck_before_submit: false, #不預先檢查
+      price_tier: 0,
+      copyright: ENV['COPYRIGHT'],
+      keywords: {
+        "en-US" => ENV['KEYWORDS']
+      },
+      subtitle: {
+        "en-US" => ENV['SUBTITLE']
+      },
+      privacy_url: {
+        "en-US" => ENV['PRIVACY_URL']
+      },
+      support_url: {
+        "en-US" => ENV['SUPPORT_URL']
+      },
+      primary_category: ENV['P_CATEGORY'],
+      secondary_category: ENV['S_CATEGORY'],
+      name:{
+        "en-US" => ENV['APP_NAME']
+      },
+      app_review_information: {
+        first_name: "",
+        last_name: "",
+        phone_number: "",
+        email_address: "",
+        demo_user: "",
+        demo_password: "",
+        notes: ""
+      }
+    )
+  end
+
+  desc "上傳送審資料(無聯絡人)兼送審"
+  lane :Update_Submit_NoContact do
+    connectAppStoreWithAPIKey
+    deliver(
+      app_identifier: ENV['BUNDLE_ID'],
+      automatic_release: true, 
+      force: true, # Skip HTMl report verification
+      skip_metadata: false, #要更新文案
+      skip_screenshots: false, #要上傳截圖
+      overwrite_screenshots: true, #要更新截圖
+      skip_binary_upload: true, #不上傳 ipa
+      reject_if_possible: false, #如果有已經送審中的 ipa，就取消重送 
+      submit_for_review: true, #送審
+      run_precheck_before_submit: false, #不預先檢查
+      price_tier: 0,
+      copyright: ENV['COPYRIGHT'],
+      keywords: {
+        "en-US" => ENV['KEYWORDS']
+      },
+      subtitle: {
+        "en-US" => ENV['SUBTITLE']
+      },
+      privacy_url: {
+        "en-US" => ENV['PRIVACY_URL']
+      },
+      support_url: {
+        "en-US" => ENV['SUPPORT_URL']
+      },
+      primary_category: ENV['P_CATEGORY'],
+      secondary_category: ENV['S_CATEGORY'],
+      name:{
+        "en-US" => ENV['APP_NAME']
+      }
+    )
+  end
+
+  desc "取消送審"
+  lane :submit_cancel do
+    connectAppStoreWithAPIKey
+    deliver(
+      app_identifier: ENV['BUNDLE_ID'],
+      automatic_release: true, 
+      force: true, # Skip HTMl report verification
+      skip_metadata: true, #要更新文案
+      skip_screenshots: true, #要上傳截圖
+      overwrite_screenshots: false, #要更新截圖
+      skip_binary_upload: true, #不上傳 ipa
+      reject_if_possible: true, #如果有已經送審中的 ipa，就取消重送 
+      submit_for_review: false, #不送審
+      run_precheck_before_submit: false, #不預先檢查
+    )
+  end
+
+  desc "只送審"
+  lane :submit_only do
+    connectAppStoreWithAPIKey
+    deliver(
+      app_identifier: ENV['BUNDLE_ID'],
+      automatic_release: true, 
+      force: true, # Skip HTMl report verification
+      skip_metadata: true, #要更新文案
+      skip_screenshots: true, #要上傳截圖
+      overwrite_screenshots: false, #要更新截圖
+      skip_binary_upload: true, #不上傳 ipa
+      reject_if_possible: true, #如果有已經送審中的 ipa，就取消重送 
+      submit_for_review: true, #不送審
+      run_precheck_before_submit: false, #不預先檢查
+    )
+  end
+
+  desc "發布privacy"
+  lane :send_privacy do
+    upload_app_privacy_details_to_app_store(
+     username: "heshamkinghamdysi@gmail.com",
+     team_id: ENV['TEAM_ID'],
+     app_identifier: ENV['BUNDLE_ID'],
+     json_path: "fastlane/app_privacy_details.json"
+    )
+  end
+
+  desc "用 adHoc 打包上傳 AppCenter"
+  lane :ac do
+    # 記得要有 AdHocWildhoc 這個 provision
+    arch_adhoc
+
+    # 要到 app center 那邊先創 app name，不然會到 everything_you_test
+    upload_appcenter
+  end
+
+  desc "打包 adhoc 的 ipa"
+  lane :arch_adhoc do
+    ipaFileName = "#{getFileName}.ipa"
+    profileName = "distribution"
+    teamID = "K936Z64C7S"
+    cert="Apple Distribution: Huyen Trang Thi Pham (K936Z64C7S)"
+    export_method="ad-hoc"
+
+    update_code_signing_settings(
+      path: "#{ENV['SCHEME']}.xcodeproj",
+      profile_name: profileName,
+      targets: ENV["SCHEME"],
+      bundle_identifier: ENV["BUNDLE_ID"],
+      team_id:teamID,
+      code_sign_identity: cert
+    )
+
+    build_app(
+      workspace: "#{ENV['SCHEME']}.xcworkspace",
+      scheme: ENV["SCHEME"],
+      export_method: export_method,
+      clean: true,
+      output_directory: 'build',
+      output_name: ipaFileName,
+      xcargs: 'DEBUG_INFORMATION_FORMAT=dwarf-with-dsym',
+      skip_profile_detection: true,
+      export_options: {
+        provisioningProfiles: { 
+          ENV['BUNDLE_ID'] => "#{profileName}"
+        }
+      }
+    )
+  end
+
+  desc "Upload ipa and dsym to AppCenter"
+  lane :upload_appcenter do
+    ensure_env_vars(env_vars: ['APPCENTER_GROUP'])
+
+    ipaFilePath = "build/#{getFileName}.ipa"
+    dsymFilePath = "build/#{getFileName}.app.dSYM.zip"
+
+    hash = changelog_from_git_commits(pretty: '%h', commits_count:1, quiet: true)
+
+    commits = changelog_from_git_commits(
+      commits_count: 5,
+      pretty: "\n - %s %an",
+      merge_commit_filtering: 'exclude_merges',
+    )
+
+    releaseNote = "branch: #{git_branch}\n\ncommit: #{hash}#{commits}"
+
+    appcenter_upload(
+      api_token: ENV['APPCENTER_TOKEN'],
+      file: ipaFilePath,
+      dsym: dsymFilePath,
+      owner_type: 'organization',
+      owner_name: 'yoasobi',
+      app_name: ENV['SCHEME'],
+      destinations: ENV['APPCENTER_GROUP'],
+      destination_type: "group",
+      upload_dsym_only:  false,
+      notify_testers: true,
+      release_notes: releaseNote
+    )
+  end
+
+  desc "Upload dsym to AppCenter"
+  lane :upload_dsym_appcenter do
+    dsymFilePath = "build/#{getFileName}.app.dSYM.zip"
+
+    # hokila 的 Token
+    appcenter_upload(
+      api_token: '9d4a5d349ae3e50b64ebf3ddbc2589953aed4bdc',
+      dsym: dsymFilePath,
+      owner_type: 'organization',
+      owner_name: 'yoasobi',
+      app_name: '1111',
+      destination_type: "group",
+      upload_dsym_only:  true,
+    )
+  end
+end
