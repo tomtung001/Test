@@ -17,24 +17,24 @@ platform :ios do
   lane :all do
     arch
     submit_review
-    upload_dsym_sentry
-    upload_dsym_appcenter
+    # upload_dsym_sentry
+    # upload_dsym_appcenter
   end
 
   # 打包以後上傳 TestFlight
   lane :first_upload do
     arch
     upload_testflight
-    upload_dsym_sentry
-    upload_dsym_appcenter
+    # upload_dsym_sentry
+    # upload_dsym_appcenter
   end
 
   # 第一次送審，打包以後上傳送審
   lane :first_submit do
     arch
     submit_pure
-    upload_dsym_sentry
-    upload_dsym_appcenter
+    # upload_dsym_sentry
+    # upload_dsym_appcenter
   end
 
   private_lane :filePath do
@@ -109,11 +109,11 @@ platform :ios do
       output_name: ipaFileName,
       xcargs: 'DEBUG_INFORMATION_FORMAT=dwarf-with-dsym',
       skip_profile_detection: true,
-      # export_options: {
-      #   provisioningProfiles: { 
-      #     ENV['BUNDLE_ID'] => "#{profileName}"
-      #   }
-      # }
+      export_options: {
+        provisioningProfiles: { 
+          ENV['BUNDLE_ID'] => "#{profileName}"
+        }
+      }
     )
   end
 
